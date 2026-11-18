@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Entwurfs-Sandbox</title>
+<style>
+:root{--bg:#f4f2ee;--panel:#fff;--ink:#222;--mute:#777;--acc:#c0573a;--line:#ddd}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--ink);overflow:hidden}
+#app{display:flex;height:100vh}
+aside{width:260px;background:var(--panel);border-right:1px solid var(--line);padding:12px;overflow:auto}
+aside.right{border-right:0;border-left:1px solid var(--line)}
+h1{font-size:16px;margin:0 0 8px}h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:16px 0 6px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+button{font:inherit;padding:7px 8px;border:1px solid var(--line);background:#fafafa;border-radius:6px;cursor:pointer;text-align:left}
+button:hover{border-color:var(--acc)}button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+#view{flex:1;position:relative}
+#hint{position:absolute;left:12px;bottom:12px;background:#fffd;padding:6px 10px;border-radius:6px;font-size:12px;color:var(--mute)}
+.sug{border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px}
+.sug b{display:block}.sug p{margin:4px 0;color:var(--mute);font-size:12px}
+.sug button{padding:4px 8px;font-size:12px}
+label{display:block;font-size:12px;color:var(--mute);margin-top:6px}
+input[type=range]{width:100%}input[type=color]{width:100%;height:28px;border:0}
+.stats{font-size:12px;color:var(--mute)}
+</style>
+</head>
+<body>
+<div id="app">
+<aside>
+  <h1>Entwurfs-Sandbox</h1>
+  <h2>Bauteile platzieren</h2>
+  <div class="grid" id="tools"></div>
+  <h2>Typologie-Vorlagen</h2>
+  <div class="grid" id="templates"></div>
+  <h2>Auswahl</h2>
+  <div id="sel" class="stats">Nichts ausgewählt</div>
+  <label>Breite <input type="range" id="sx" min="1" max="40" step="1"></label>
+  <label>Tiefe <input type="range" id="sz" min="1" max="40" step="1"></label>
+  <label>Höhe <input type="range" id="sy" min="0.3" max="60" step="0.3"></label>
+  <label>Farbe/Material <input type="color" id="col"></label>
+  <h2>Ansicht</h2>
+  <label>Sonnenstand (Uhrzeit) <input type="range" id="sun" min="6" max="20" step="0.25" value="14"></label>
+  <div class="grid" style="margin-top:6px">
+    <button id="mono">Arbeitsmodell weiß</button><button id="clear">Alles löschen</button>
+    <button id="save">Speichern</button><button id="load">Laden</button>
+    <button id="png">Bild (PNG)</button><button id="obj">Export OBJ</button>
+  </div>
+</aside>
+<div id="view"><div id="hint">Klick = platzieren · Klick auf Objekt = auswählen · Ziehen = verschieben · R = drehen · D = duplizieren · Entf = löschen · Strg+Z = rückgängig · Rechte Maus = Kamera</div></div>
+<aside class="right">
+  <h2>Kennwerte</h2><div id="stats" class="stats"></div>
+  <h2>Vorschläge</h2><div id="sugs"></div>
+</aside>
+</div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {OBJExporter} from 'three/addons/exporters/OBJExporter.js';
+
+const FLOOR=3; // Geschosshöhe m
+const TYPES={
+  volumen:{n:'Baukörper',s:[8,9,10],c:'#e8e2d6'},
+  scheibe:{n:'Wand/Scheibe',s:[6,3,0.3],c:'#cfc8bb'},
+  platte:{n:'Decke/Platte',s:[10,0.3,10],c:'#bdb6a8'},
+  stuetze:{n:'Stütze',s:[0.4,3,0.4],c:'#9a948a',shape:'cyl'},
+  turm:{n:'Turm',s:[6,30,6],c:'#dcd6ca'},
+  dach:{n:'Satteldach',s:[8,3,10],c:'#a5523a',shape:'roof'},
+  baum:{n:'Baum',s:[4,6,4],c:'#7f9c6b',shape:'tree'},
+  glas:{n:'Glasfassade',s:[6,3,0.1],c:'#9fc4d6',glass:true},
+};
+const view=document.getElementById('view');
+const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+view.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color('#eae7e1');
+const cam=new THREE.PerspectiveCamera(45,1,0.1,2000);cam.position.set(45,40,55);
+const ctl=new OrbitControls(cam,renderer.domElement);
+ctl.mouseButtons={LEFT:null,MIDDLE:THREE.MOUSE.DOLLY,RIGHT:THREE.MOUSE.ROTATE};ctl.enableDamping=true;
+scene.add(new THREE.HemisphereLight('#fff','#b9b2a5',0.9));
+const sun=new THREE.DirectionalLight('#fff',1.6);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-80,right:80,top:80,bottom:-80,far:400});scene.add(sun);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(400,400),new THREE.MeshStandardMaterial({color:'#f2efe9'}));
+ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;scene.add(ground);
+const grid=new THREE.GridHelper(200,200,'#c9c3b8','#ddd8cf');grid.position.y=0.01;scene.add(grid);
+// Grundstück
+const plot=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[-30,-20],[30,-20],[30,20],[-30,20]].map(p=>new THREE.Vector3(p[0],0.03,p[1]))),new THREE.LineBasicMaterial({color:'#c0573a'}));scene.add(plot);
+const PLOT_AREA=60*40;
+
+let objs=[],selected=null,tool='volumen',mono=false,history=[];
+const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();
+
+function geom(t,s){
+  const sh=TYPES[t].shape;
+  if(sh==='cyl'){const g=new THREE.CylinderGeometry(.5,.5,1,20);g.translate(0,.5,0);return g;}
+  if(sh==='roof'){const p=new THREE.Shape();p.moveTo(-.5,0);p.lineTo(.5,0);p.lineTo(0,1);p.closePath();
+    const g=new THREE.ExtrudeGeometry(p,{depth:1,bevelEnabled:false});g.translate(0,0,-.5);return g;}
+  if(sh==='tree'){const g=new THREE.SphereGeometry(.5,14,10);g.translate(0,.6,0);return g;}
+  const g=new THREE.BoxGeometry(1,1,1);g.translate(0,.5,0);return g;
+}
+function make(d){
+  const T=TYPES[d.t];
+  const m=new THREE.Mesh(geom(d.t),new THREE.MeshStandardMaterial({color:d.c||T.c,roughness:.85,transparent:!!T.glass,opacity:T.glass?.45:1}));
+  m.castShadow=m.receiveShadow=true;
+  m.userData={t:d.t,c:d.c||T.c};
+  m.position.set(d.p[0],d.p[1]||0,d.p[2]);m.scale.set(...(d.s||T.s));m.rotation.y=d.r||0;
+  const e=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry,30),new THREE.LineBasicMaterial({color:'#555',transparent:true,opacity:.35}));
+  m.add(e);scene.add(m);objs.push(m);applyMono(m);return m;
+}
+const ser=()=>objs.map(o=>({t:o.userData.t,c:o.userData.c,p:o.position.toArray(),s:o.scale.toArray(),r:o.rotation.y}));
+function snap(){history.push(JSON.stringify(ser()));if(history.length>80)history.shift();}
+function restore(arr){objs.forEach(o=>scene.remove(o));objs=[];select(null);arr.forEach(make);update();}
+function applyMono(o){o.material.color.set(mono&&!TYPES[o.userData.t].glass?'#f7f6f3':o.userData.c);}
+
+function select(o){
+  if(selected)selected.children[0].material.color.set('#555'),selected.children[0].material.opacity=.35;
+  selected=o;const el=document.getElementById('sel');
+  if(!o){el.textContent='Nichts ausgewählt';return;}
+  o.children[0].material.color.set('#c0573a');o.children[0].material.opacity=1;
+  el.textContent=TYPES[o.userData.t].n;
+  sx.value=o.scale.x;sy.value=o.scale.y;sz.value=o.scale.z;col.value=o.userData.c;
+}
+// Top of stack at point (stapeln)
+function stackHeight(x,z,ignore){let h=0;const b=new THREE.Box3();
+  for(const o of objs){if(o===ignore||TYPES[o.userData.t].shape==='tree')continue;b.setFromObject(o);
+    if(x>b.min.x&&x<b.max.x&&z>b.min.z&&z<b.max.z)h=Math.max(h,b.max.y);}return h;}
+
+function pick(e){const r=renderer.domElement.getBoundingClientRect();
+  mouse.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(mouse,cam);}
+let drag=null;
+renderer.domElement.addEventListener('pointerdown',e=>{
+  if(e.button!==0)return;pick(e);
+  const hit=ray.intersectObjects(objs,false)[0];
+  if(hit&&!e.shiftKey){select(hit.object);snap();drag={o:hit.object,moved:false};ctl.enabled=false;return;}
+  const g=ray.intersectObject(ground)[0];if(!g)return;
+  snap();const x=Math.round(g.point.x),z=Math.round(g.point.z);
+  const T=TYPES[tool];const o=make({t:tool,p:[x,0,z],s:[...T.s]});
+  o.position.y=hit&&e.shiftKey?stackHeight(x,z,o):0;select(o);update();
+});
+renderer.domElement.addEventListener('pointermove',e=>{
+  if(!drag)return;pick(e);const g=ray.intersectObject(ground)[0];if(!g)return;
+  drag.o.position.x=Math.round(g.point.x);drag.o.position.z=Math.round(g.point.z);
+  drag.o.position.y=stackHeight(drag.o.position.x,drag.o.position.z,drag.o);drag.moved=true;
+});
+addEventListener('pointerup',()=>{if(drag){if(!drag.moved)history.pop();drag=null;ctl.enabled=true;update();}});
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if((e.ctrlKey||e.metaKey)&&e.key==='z'){const h=history.pop();if(h)restore(JSON.parse(h));e.preventDefault();return;}
+  if(!selected)return;
+  if(e.key==='Delete'||e.key==='Backspace'){snap();scene.remove(selected);objs=objs.filter(o=>o!==selected);select(null);update();}
+  if(e.key==='r'||e.key==='R'){snap();selected.rotation.y+=Math.PI/(e.shiftKey?12:2);update();}
+  if(e.key==='d'||e.key==='D'){snap();const d=ser()[objs.indexOf(selected)];d.p[0]+=Math.ceil(selected.scale.x)+2;select(make(d));update();}
+});
+for(const id of ['sx','sy','sz']){const el=document.getElementById(id);
+  el.addEventListener('pointerdown',()=>selected&&snap());
+  el.addEventListener('input',()=>{if(!selected)return;selected.scale[id[1]]=+el.value;update();});}
+col.addEventListener('input',()=>{if(!selected)return;selected.userData.c=col.value;applyMono(selected);});
+
+// Werkzeuge
+const tools=document.getElementById('tools');
+for(const [k,T] of Object.entries(TYPES)){const b=document.createElement('button');b.textContent=T.n;
+  b.onclick=()=>{tool=k;[...tools.children].forEach(c=>c.classList.toggle('on',c===b));};
+  if(k===tool)b.classList.add('on');tools.appendChild(b);}
+
+// Vorlagen
+const TPL={
+  'Riegel':()=>[{t:'volumen',p:[0,0,0],s:[40,9,12]}],
+  'Hofhaus':()=>[{t:'volumen',p:[0,0,-10],s:[30,9,8]},{t:'volumen',p:[0,0,10],s:[30,9,8]},{t:'volumen',p:[-11,0,0],s:[8,9,12]},{t:'volumen',p:[11,0,0],s:[8,9,12]},{t:'baum',p:[0,0,0],s:[5,7,5]}],
+  'Punkthaus':()=>[{t:'volumen',p:[0,0,0],s:[16,15,16]}],
+  'Kamm':()=>[{t:'volumen',p:[0,0,-12],s:[44,9,8]},...[-16,0,16].map(x=>({t:'volumen',p:[x,0,2],s:[8,6,20]}))],
+  'Turm + Sockel':()=>[{t:'volumen',p:[0,0,0],s:[30,6,24]},{t:'turm',p:[6,6,0],s:[10,36,10]}],
+  'Pavillon':()=>[{t:'platte',p:[0,3,0],s:[16,.4,12]},...[[-7,-5],[7,-5],[-7,5],[7,5]].map(([x,z])=>({t:'stuetze',p:[x,0,z],s:[.4,3,.4]})),{t:'glas',p:[0,0,-3],s:[10,3,.1]}],
+  'Einfamilienhaus':()=>[{t:'volumen',p:[0,0,0],s:[10,6,12]},{t:'dach',p:[0,6,0],s:[10,4,12]},{t:'baum',p:[10,0,6],s:[4,6,4]}],
+};
+const tpl=document.getElementById('templates');
+for(const [k,f] of Object.entries(TPL)){const b=document.createElement('button');b.textContent=k;
+  b.onclick=()=>{snap();f().forEach(make);update();};tpl.appendChild(b);}
+
+// Kennwerte + Vorschläge
+function update(){
+  let footprint=0,bgf=0,maxH=0,vol=0;const b=new THREE.Box3();
+  for(const o of objs){const t=o.userData.t;if(!['volumen','turm'].includes(t))continue;
+    const a=o.scale.x*o.scale.z;footprint+=o.position.y<0.5?a:0;const fl=Math.max(1,Math.round(o.scale.y/FLOOR));
+    bgf+=a*fl;vol+=a*o.scale.y;b.setFromObject(o);maxH=Math.max(maxH,b.max.y);}
+  const grz=footprint/PLOT_AREA,gfz=bgf/PLOT_AREA;
+  document.getElementById('stats').innerHTML=
+   `Grundstück: ${PLOT_AREA} m²<br>Grundfläche: ${footprint.toFixed(0)} m²<br>GRZ: <b>${grz.toFixed(2)}</b><br>BGF ca.: ${bgf.toFixed(0)} m²<br>GFZ: <b>${gfz.toFixed(2)}</b><br>Max. Höhe: ${maxH.toFixed(1)} m<br>Objekte: ${objs.length}`;
+  const S=[];const add=(t,p,act,lbl)=>S.push({t,p,act,lbl});
+  if(!objs.length)add('Leg los mit einer Typologie','Wähle links eine Vorlage (z. B. Hofhaus) als Ausgangspunkt und verforme sie.',()=>{snap();TPL['Hofhaus']().forEach(make);update();},'Hofhaus einsetzen');
+  if(grz>0.6)add('Sehr hohe Versiegelung',`GRZ ${grz.toFixed(2)} – üblich sind 0,4–0,6. Volumen in die Höhe stapeln statt in die Fläche.`,selected?()=>{snap();selected.scale.x*=.7;selected.scale.z*=.7;selected.scale.y*=1.4;update();}:null,'Auswahl schlanker & höher');
+  if(objs.length&&!objs.some(o=>o.userData.t==='baum'))add('Freiraum mitdenken','Bäume geben Maßstab und gliedern den Außenraum.',()=>{snap();[[-25,-15],[-25,15],[25,-15],[25,15]].forEach(([x,z])=>make({t:'baum',p:[x,0,z]}));update();},'Baumreihe ergänzen');
+  if(maxH>25)add('Hochhausgrenze','Über ca. 22 m Fußbodenhöhe gelten Hochhausregeln (2. Rettungsweg, Sicherheitstreppenhaus).',null);
+  if(selected&&['volumen','turm'].includes(selected.userData.t)){
+    const o=selected;
+    if(Math.max(o.scale.x,o.scale.z)/Math.min(o.scale.x,o.scale.z)<1.3&&o.scale.x>14)add('Tiefer Baukörper','Über ~14 m Tiefe wird Belichtung schwierig. Ein Innenhof oder Lichtschacht hilft.',()=>{snap();const {x,y,z}=o.position,sx=o.scale.x,sz=o.scale.z,h=o.scale.y;scene.remove(o);objs=objs.filter(q=>q!==o);
+      make({t:'volumen',p:[x,y,z-sz/2+sz*.15],s:[sx,h,sz*.3]});make({t:'volumen',p:[x,y,z+sz/2-sz*.15],s:[sx,h,sz*.3]});make({t:'volumen',p:[x-sx/2+sx*.15,y,z],s:[sx*.3,h,sz*.4]});make({t:'volumen',p:[x+sx/2-sx*.15,y,z],s:[sx*.3,h,sz*.4]});select(null);update();},'Zum Hof umbauen');
+    if(Math.abs(o.scale.y/FLOOR-Math.round(o.scale.y/FLOOR))>.1)add('Geschosshöhe',`Höhe ${o.scale.y.toFixed(1)} m ist kein Vielfaches von ${FLOOR} m.`,()=>{snap();o.scale.y=Math.max(FLOOR,Math.round(o.scale.y/FLOOR)*FLOOR);select(o);update();},'Auf Geschosse runden');
+    if(o.position.y<0.5&&o.scale.y>=9)add('Sockel ausbilden','Ein zurückgesetztes, gläsernes EG macht den Baukörper zugänglicher.',()=>{snap();const d=ser()[objs.indexOf(o)];o.position.y=FLOOR;o.scale.y-=FLOOR;make({t:'glas',p:[d.p[0],0,d.p[2]],s:[o.scale.x-2,FLOOR,o.scale.z-2],r:d.r});update();},'Glas-Sockel');
+    add('Variante erzeugen','Probiere eine Verschiebung: oberen Teil auskragen lassen.',()=>{snap();const d=ser()[objs.indexOf(o)];const h=Math.round(o.scale.y/2/FLOOR)*FLOOR||FLOOR;o.scale.y-=h;make({t:o.userData.t,p:[d.p[0]+3,o.scale.y,d.p[2]],s:[d.s[0],h,d.s[2]],r:d.r});update();},'Auskragung');
+  }
+  if(gfz>0&&gfz<0.4)add('Dichte erhöhen?',`GFZ ${gfz.toFixed(2)} ist eher locker. Ein weiterer Riegel oder ein Geschoss mehr?`,()=>{snap();objs.filter(o=>o.userData.t==='volumen').forEach(o=>o.scale.y+=FLOOR);update();},'+1 Geschoss überall');
+  add('Schattenwurf prüfen','Schieb den Sonnenstand-Regler – sieh, wo der Hof im Winter verschattet ist.',null);
+  document.getElementById('sugs').innerHTML='';
+  for(const s of S){const d=document.createElement('div');d.className='sug';d.innerHTML=`<b>${s.t}</b><p>${s.p}</p>`;
+    if(s.act){const b=document.createElement('button');b.textContent='→ '+s.lbl;b.onclick=s.act;d.appendChild(b);}
+    document.getElementById('sugs').appendChild(d);}
+}
+
+// Sonne
+function setSun(h){const a=(h-6)/14*Math.PI;sun.position.set(Math.cos(a)*-100,Math.sin(a)*90+5,-60);
+  sun.intensity=0.4+Math.sin(a)*1.4;}
+document.getElementById('sun').oninput=e=>setSun(+e.target.value);setSun(14);
+
+document.getElementById('mono').onclick=e=>{mono=!mono;e.target.classList.toggle('on',mono);objs.forEach(applyMono);};
+document.getElementById('clear').onclick=()=>{if(confirm('Alles löschen?')){snap();restore([]);}};
+document.getElementById('save').onclick=()=>{try{localStorage.setItem('entwurf',JSON.stringify(ser()));alert('Gespeichert');}catch{}};
+document.getElementById('load').onclick=()=>{try{const d=localStorage.getItem('entwurf');if(d){snap();restore(JSON.parse(d));}}catch{}};
+const dl=(href,n)=>{const a=document.createElement('a');a.href=href;a.download=n;a.click();};
+document.getElementById('png').onclick=()=>dl(renderer.domElement.toDataURL('image/png'),'entwurf.png');
+document.getElementById('obj').onclick=()=>{const g=new THREE.Group();objs.forEach(o=>{const c=new THREE.Mesh(o.geometry,o.material);c.applyMatrix4(o.matrixWorld);g.add(c);});
+  dl(URL.createObjectURL(new Blob([new OBJExporter().parse(g)])),'entwurf.obj');};
+
+function resize(){const w=view.clientWidth,h=view.clientHeight;renderer.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();}
+addEventListener('resize',resize);resize();update();
+renderer.setAnimationLoop(()=>{ctl.update();renderer.render(scene,cam);});
+</script>
+</body>
+</html>
